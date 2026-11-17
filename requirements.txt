@@ -1,0 +1,2 @@
+# Aucune dépendance : le projet n utilise que la bibliothèque standard Python 3.10+ (interface web comprise).
+# Facultatif : Node.js + « npm install jsdom » pour exécuter le test d interface (tests/test_web_ui.py).

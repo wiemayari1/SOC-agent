@@ -1,0 +1,118 @@
+{
+  "sqli": [
+    {
+      "name": "union_select",
+      "strength": "strong",
+      "regex": "union(?:\\s|/\\*.*?\\*/)+(?:all\\s+)?select"
+    },
+    {
+      "name": "tautologie_or",
+      "strength": "strong",
+      "regex": "(?:'|\\s)or\\s+'?\\d+'?\\s*=\\s*'?\\d+"
+    },
+    {
+      "name": "time_based",
+      "strength": "strong",
+      "regex": "(?:sleep\\s*\\(\\s*\\d+|benchmark\\s*\\(|pg_sleep\\s*\\(|waitfor\\s+delay)"
+    },
+    {
+      "name": "stacked_query",
+      "strength": "strong",
+      "regex": ";\\s*(?:drop|insert|update|delete|exec)\\b"
+    },
+    {
+      "name": "information_schema",
+      "strength": "strong",
+      "regex": "information_schema|sqlite_master|pg_catalog"
+    },
+    {
+      "name": "commentaire_terminal",
+      "strength": "strong",
+      "regex": "['\"]\\s*(?:--|#|/\\*)"
+    },
+    {
+      "name": "apostrophe_seule",
+      "strength": "weak",
+      "regex": "['\"]"
+    }
+  ],
+  "scanner_user_agents": [
+    "sqlmap",
+    "nikto",
+    "nmap",
+    "masscan",
+    "acunetix",
+    "havij"
+  ],
+  "suspicious_extensions": [
+    ".exe",
+    ".scr",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".vbs",
+    ".js",
+    ".jar",
+    ".dll",
+    ".sh"
+  ],
+  "executable_extensions": [
+    ".exe",
+    ".scr",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".vbs",
+    ".jar"
+  ],
+  "document_extensions": [
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".jpg",
+    ".png",
+    ".txt"
+  ],
+  "suspicious_dirs": [
+    "/tmp/",
+    "/dev/shm/",
+    "/var/tmp/"
+  ],
+  "ransomware_extensions": [
+    ".locked",
+    ".encrypted",
+    ".crypt",
+    ".enc",
+    ".wncry"
+  ],
+  "ransom_notes": [
+    "README_DECRYPT.txt",
+    "HOW_TO_RECOVER.txt",
+    "DECRYPT_INSTRUCTIONS.html"
+  ],
+  "sensitive_ports": [
+    21,
+    22,
+    23,
+    25,
+    135,
+    139,
+    445,
+    1433,
+    3306,
+    3389,
+    5432,
+    5900
+  ],
+  "suspicious_commands": [
+    "wget ",
+    "curl ",
+    "chmod +x",
+    "/etc/shadow",
+    "nc -e",
+    "base64 -d",
+    "bash -i"
+  ]
+}

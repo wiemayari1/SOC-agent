@@ -1,0 +1,7 @@
+# Facultatif et NON testé ici.  Usage :  docker compose up --build   puis http://localhost:8000
+# Pour le mode Wazuh : montez config/wazuh.json et remplacez la commande par : serve --live --host 0.0.0.0 --no-browser
+services:
+  soc:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["./data:/app/data", "./config:/app/config"]

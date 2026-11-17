@@ -1,0 +1,19 @@
+{
+  "autonomy_level": 3,
+  "_autonomy_help": "1 = l'agent propose seulement ; 2 = l'agent prépare et demande validation humaine ; 3 = l'agent exécute les actions autorisées (sauf actions sensibles).",
+  "protected_ips": ["192.168.26.134"],
+  "protected_hosts": ["srv-core"],
+  "actions": {
+    "block_ip":       {"auto": true,  "min_cf": 0.65, "ttl_seconds": 3600, "description": "Blocage temporaire d'une IP (pare-feu simulé)"},
+    "quarantine_file":{"auto": true,  "min_cf": 0.90, "description": "Déplacement du fichier en quarantaine (bac à sable)"},
+    "isolate_host":   {"auto": false, "min_cf": 0.80, "description": "Isolation réseau d'une machine (toujours validée par un humain)"},
+    "notify_analyst": {"auto": true,  "min_cf": 0.0,  "description": "Notification de l'analyste SOC"},
+    "monitor":        {"auto": true,  "min_cf": 0.0,  "description": "Ajout à la liste de surveillance"}
+  },
+  "agent": {"max_steps": 8, "min_steps": 2, "confirm_cf": 0.85, "refute_cf": 0.25},
+  "thresholds": {
+    "ssh_min_failures": 3, "ssh_window_s": 120,
+    "scan_min_ports": 5, "scan_window_s": 60,
+    "ransom_min_renames": 5, "ransom_window_s": 60
+  }
+}

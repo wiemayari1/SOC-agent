@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <meta name="color-scheme" content="dark light">
+  <title>SOC Agent — Centre d'opérations</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%234c8dff' d='M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip" href="#view">Aller au contenu</a>
+  <header class="topbar">
+    <button id="menu-btn" class="icon-btn menu-btn" aria-label="Ouvrir le menu" type="button">&#9776;</button>
+    <a class="brand" href="#/overview" aria-label="SOC Agent — accueil">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path class="brand-shield" d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/><path class="brand-check" d="m8.5 12 2.5 2.5L16 9.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="brand-text"><span class="brand-name">SOC Agent</span><span class="brand-sub">Détection · Investigation · Réponse</span></span>
+    </a>
+    <span class="spacer"></span>
+    <div id="live-pill" class="pill pill-muted" role="status" aria-live="polite">Chargement…</div>
+    <div class="autonomy" role="group" aria-label="Niveau d'autonomie de l'agent">
+      <span class="autonomy-label">Autonomie</span>
+      <div class="segmented" id="autonomy"></div>
+    </div>
+    <button id="theme-btn" class="icon-btn" aria-label="Changer de thème" title="Changer de thème" type="button">&#9680;</button>
+  </header>
+  <div class="layout">
+    <nav class="sidebar" id="sidebar" aria-label="Navigation principale"></nav>
+    <main id="view" tabindex="-1" aria-live="polite"></main>
+  </div>
+  <div id="toasts" aria-live="assertive"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

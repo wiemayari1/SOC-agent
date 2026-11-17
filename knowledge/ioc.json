@@ -1,0 +1,19 @@
+{
+  "_comment": "Base IOC locale (laboratoire). Les adresses sont dans les plages de documentation RFC 5737.",
+  "bad_ips": {
+    "192.0.2.88": {
+      "category": "scanner",
+      "source": "flux-labo"
+    },
+    "198.51.100.140": {
+      "category": "web-scanner",
+      "source": "flux-labo"
+    }
+  },
+  "bad_hashes": {
+    "32c5f3527c00477bb39f59c5c00cfca6f6dc3c428cdda045a2f490181a7060d4": {
+      "name": "Lab.FakeTrojan.A",
+      "family": "trojan"
+    }
+  }
+}
