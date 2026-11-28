@@ -148,4 +148,10 @@ class Executor:
                     del st["quarantine"][q]
                     self._save(st)
                     return ActionResult(True, f"{target} restauré", dst.exists(), "fichier revenu à son emplacement")
+            if target in st.get("quarantine_sim", {}):
+                del st["quarantine_sim"][target]
+                self._save(st)
+                ok = target not in self._load().get("quarantine_sim", {})
+                return ActionResult(True, f"(simulé) quarantaine de {target} levée", ok,
+                                    "entrée retirée de la quarantaine simulée" if ok else "entrée toujours présente")
         return ActionResult(False, f"rien à annuler pour {action} sur {target}")

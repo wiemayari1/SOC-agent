@@ -4,7 +4,7 @@ Cycle (toutes les `poll_seconds`) :
   1. récupérer les nouvelles alertes Wazuh (indexeur ou fichier) ;
   2. les convertir en événements normalisés (dédoublonnés) et les garder dans une fenêtre glissante ;
   3. recalculer les alertes candidates ; une alerte est traitée quand elle est « mûre »
-     (plus d'activité depuis `settle_seconds`, ou succès après échecs SSH = urgence, ou attaque longue) ;
+     (plus d'activité depuis `settle_seconds`, ou succès après échecs SSH / fichier suspect = urgence, ou attaque longue) ;
   4. chaque alerte n'est traitée qu'une fois par « signature » (scénario + cible + ordre de grandeur du volume).
 """
 from __future__ import annotations
@@ -75,6 +75,8 @@ class LiveMonitor(threading.Thread):
     def is_mature(self, a: Alert, now: datetime) -> bool:
         if a.facts.get("ssh_success_after_failures"):
             return True                                              # urgence : succès après force brute
+        if a.scenario == "malicious_file" and a.kind == "suspicious_file":
+            return True                                              # fichier suspect isolé : pas de rafale à attendre
         if (now - a.last_ts).total_seconds() >= self.settle:
             return True                                              # l'activité s'est calmée
         return (a.last_ts - a.first_ts).total_seconds() >= self.max_wait   # attaque longue : on n'attend pas la fin

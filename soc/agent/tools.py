@@ -43,6 +43,7 @@ class ToolContext:
     ws: Any
     policy: dict
     executor: Any
+    db: Any = None
 
 
 class ToolBox:
@@ -70,11 +71,11 @@ class ToolBox:
                and (host is None or e.host == host) and (after_dt is None or e.ts >= after_dt)]
         facts: dict = {}
         if source == "web" and ip:
-            payload = [e for e in evs if classify_request(e.details["url"], self._sqli)[0] == "strong"]
-            facts["web_error_after_sqli"] = sum(1 for e in payload if e.details["status"] >= 500)
-            facts["web_payload_200_count"] = sum(1 for e in payload if e.details["status"] == 200)
+            payload = [e for e in evs if e.details.get("url") and classify_request(e.details["url"], self._sqli)[0] == "strong"]
+            facts["web_error_after_sqli"] = sum(1 for e in payload if e.details.get("status", 0) >= 500)
+            facts["web_payload_200_count"] = sum(1 for e in payload if e.details.get("status") == 200)
         if type == "sudo_command":
-            cmds = [e.details["command"] for e in evs]
+            cmds = [e.details.get("command", "") for e in evs if e.details.get("command")]
             bad = [c for c in cmds if any(s in c for s in self.ctx.patterns["suspicious_commands"])]
             facts["post_login_commands"] = len(cmds)
             facts["post_login_suspicious_cmds"] = len(bad)
@@ -89,10 +90,21 @@ class ToolBox:
     def analyze_ip_activity(self, ip: str) -> ToolResult:
         evs = [e for e in self.ctx.events if e.src_ip == ip]
         alerts = build_alerts(evs, self.ctx.patterns, self.ctx.policy.get("thresholds"))
-        scen = sorted({a.scenario for a in alerts})
+        scen_set = {a.scenario for a in alerts}
+        past_scen = set()
+        if self.ctx.db is not None:
+            try:
+                for inc in self.ctx.db.incidents():
+                    if inc["src_ip"] == ip and not str(inc["verdict"]).startswith("bénin"):
+                        past_scen.add(inc["scenario"])
+            except Exception:
+                pass
+        scen = sorted(scen_set | past_scen)
         by_src = dict(Counter(e.source for e in evs))
         facts = {"ip_total_events": len(evs), "ip_scenarios": scen, "ip_multi_stage": len(scen) >= 2}
         txt = f"{len(evs)} événements sur {by_src or 'aucune source'} ; comportements suspects : {scen or 'aucun'}"
+        if past_scen - scen_set:
+            txt += f" (historique base : {sorted(past_scen - scen_set)})"
         if len(scen) >= 2:
             txt += " → ATTAQUE MULTI-ÉTAPES"
         return ToolResult(True, txt, {"by_source": by_src, "scenarios": scen}, facts)

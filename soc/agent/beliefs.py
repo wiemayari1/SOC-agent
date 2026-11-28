@@ -185,7 +185,8 @@ def _scan(c: _Ctx) -> None:
     c.note("EV-NET-07", "Sondage limité", "Entre 5 et 14 ports distincts : reconnaissance possible, peu de certitude.",
            [S("scan_distinct_ports", ">=", 5), S("scan_distinct_ports", "<", 15)], 0.3, hyp="h.port_scan", sev="low")
     c.note("EV-NET-08", "Surveillance conseillée", "Activité limitée : surveiller l'IP sans la bloquer.",
-           [S("scan_distinct_ports", ">=", 5), S("scan_distinct_ports", "<", 15)], 1.0, recs=(("monitor", False),))
+           [S("scan_distinct_ports", ">=", 5), S("scan_distinct_ports", "<", 15), c.believes("h.port_scan")], 1.0,
+           recs=(("monitor", False),))
 
 
 def _web(c: _Ctx) -> None:
@@ -227,6 +228,9 @@ def _file(c: _Ctx) -> None:
     c.note("EV-FIL-05", "Fichier suspect inconnu", "Hash absent de la base IOC mais fichier suspect : alerter l'analyste et surveiller.",
            [S("file_hash_known_malicious", "==", False), c.believes("h.malicious_file")], 1.0,
            recs=(("notify_analyst", False), ("monitor", False)))
+    c.note("EV-FIL-06", "Incohérence d'empreinte", "Le SHA-256 calculé sur disque diffère du hash journalisé : fichier modifié ou falsifié.",
+           [S("file_hash_mismatch", "==", True)], 0.7, hyp="h.malicious_file", sev="high",
+           recs=(("notify_analyst", False),))
     c.note("EV-FIL-10", "Rafale de renommages chiffrés", "20 fichiers ou plus renommés avec une extension de ransomware en 60 s.",
            [S("file_ransom_burst_count", ">=", 20)], 0.8, hyp="h.ransomware", sev="critical", wants=("host_file_activity",))
     c.note("EV-FIL-11", "Note de rançon", "Une note de rançon a été déposée sur la machine.",

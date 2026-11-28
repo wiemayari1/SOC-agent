@@ -15,6 +15,8 @@ from datetime import datetime
 from . import planner
 from .beliefs import BeliefState
 
+CRITICAL_NEEDS = ("post_login", "hash_ioc")
+
 
 @dataclass
 class Step:
@@ -77,6 +79,8 @@ class SocAgent:
         name, cf = st.result.main()
         if st.steps_taken >= self.cfg["max_steps"]:
             return True, "budget d'étapes atteint"
+        if any(n.key in CRITICAL_NEEDS for n in planner.candidate_needs(st)):
+            return False, ""
         if st.steps_taken >= self.cfg["min_steps"]:
             if cf >= self.cfg["confirm_cf"]:
                 return True, f"hypothèse confirmée (CF {cf:.2f} ≥ {self.cfg['confirm_cf']})"

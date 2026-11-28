@@ -123,7 +123,7 @@ def _ssh_alerts(events, th):
 def _scan_alerts(events, th, patterns):
     by_ip = defaultdict(list)
     for e in events:
-        if e.source == "firewall" and e.src_ip:
+        if e.source == "firewall" and e.src_ip and e.details.get("dport") is not None:
             by_ip[e.src_ip].append(e)
     sensitive = set(patterns["sensitive_ports"])
     out = []
@@ -160,13 +160,16 @@ def _web_alerts(events, patterns):
         strong = weak = 0
         names, params, bad_events = set(), set(), []
         for e in evs:
-            kind, ns = classify_request(e.details["url"], compiled)
+            url = e.details.get("url", "")
+            if not url:
+                continue
+            kind, ns = classify_request(url, compiled)
             if kind:
                 bad_events.append(e)
                 names.update(ns)
                 strong += kind == "strong"
                 weak += kind == "weak"
-                for p in urlparse(e.details["url"]).query.split("&"):
+                for p in urlparse(url).query.split("&"):
                     if p:
                         params.add(unquote_plus(p.split("=")[0]))
         scanner = any(s in e.details.get("user_agent", "").lower() for e in evs for s in scanners)
@@ -178,7 +181,7 @@ def _web_alerts(events, patterns):
             "web_requests_total": len(evs), "web_sqli_strong_hits": strong, "web_sqli_weak_hits": weak,
             "web_sqli_patterns": sorted(names), "web_sqli_params": sorted(params),
             "web_scanner_ua": scanner,
-            "web_distinct_endpoints": len({urlparse(e.details["url"]).path for e in evs}),
+            "web_distinct_endpoints": len({urlparse(e.details.get("url", "")).path for e in evs if e.details.get("url")}),
         }
         shown = bad_events or evs
         out.append(Alert("web_sqli", ip, ip, evs[0].host, shown[0].ts, shown[-1].ts, shown, facts,
@@ -198,8 +201,8 @@ def _file_alerts(events, th, patterns):
     for e in events:
         if e.source != "file" or e.type not in ("file_created", "file_modified"):
             continue
-        path = e.details["path"]
-        if path in seen:
+        path = e.details.get("path")
+        if not path or (e.host, path) in seen:
             continue
         name = os.path.basename(path)
         root, ext = os.path.splitext(name.lower())
@@ -214,25 +217,26 @@ def _file_alerts(events, th, patterns):
         }
         if not (facts["file_suspicious_ext"] or facts["file_in_suspicious_dir"] or facts["file_double_extension"]):
             continue
-        seen.add(path)
+        seen.add((e.host, path))
         out.append(Alert("malicious_file", path, None, e.host, e.ts, e.ts, [e], facts,
                          f"Fichier suspect créé : {path}", kind="suspicious_file"))
     # --- variante ransomware : rafale de renommages vers une extension de chiffrement
     by_host = defaultdict(list)
     for e in events:
-        if e.source == "file" and e.type == "file_renamed" and e.details["path"].lower().endswith(ransom_ext):
+        path = e.details.get("path", "")
+        if e.source == "file" and e.type == "file_renamed" and path.lower().endswith(ransom_ext):
             by_host[e.host].append(e)
     for host, evs in by_host.items():
         if len(evs) < th["ransom_min_renames"]:
             continue
         note = any(x.source == "file" and x.type == "file_created" and x.host == host
-                   and os.path.basename(x.details["path"]).lower() in notes for x in events)
+                   and os.path.basename(x.details.get("path", "")).lower() in notes for x in events)
         facts = {
             "alert_scenario": "malicious_file", "host": host, "src_ip": None,
             "file_ransom_burst_count": max_in_window([e.ts for e in evs], th["ransom_window_s"]),
-            "file_ransom_ext": os.path.splitext(evs[0].details["path"])[1],
+            "file_ransom_ext": os.path.splitext(evs[0].details.get("path", ""))[1],
             "file_ransom_note": note,
-            "file_distinct_dirs": len({os.path.dirname(e.details["path"]) for e in evs}),
+            "file_distinct_dirs": len({os.path.dirname(e.details.get("path", "")) for e in evs}),
         }
         out.append(Alert("malicious_file", host, None, host, evs[0].ts, evs[-1].ts, evs, facts,
                          f"Renommages massifs ({len(evs)}) vers {facts['file_ransom_ext']} sur {host}", kind="ransomware_burst"))

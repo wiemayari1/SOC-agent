@@ -42,7 +42,7 @@ def build_runtime(ws, level: int | None = None, reset_db: bool = False, load_eve
     if reset_db:
         db.reset()
     executor = Executor(ws, policy)
-    ctx = ToolContext(events, config.load_patterns(), config.load_ioc(), ws, policy, executor)
+    ctx = ToolContext(events, config.load_patterns(), config.load_ioc(), ws, policy, executor, db=db)
     tb = ToolBox(ctx)
     return Runtime(ws, policy, events, stats, db, executor, tb, SocAgent(tb, policy["agent"]), DecisionModule(policy))
 

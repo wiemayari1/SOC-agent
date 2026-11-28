@@ -118,13 +118,13 @@ class Database:
         self.con.execute("INSERT OR IGNORE INTO signatures(sig,incident_id,ts) VALUES(?,?,?)", (sig, incident_id, _now()))
         self.con.commit()
 
-    def add_feed(self, rows: list[tuple], keep: int = 1000) -> None:
+    def add_feed(self, rows: list[tuple], keep: int = 500) -> None:
         self.con.executemany("INSERT INTO feed(ts,agent,rule_id,level,description,src_ip,summary) VALUES(?,?,?,?,?,?,?)", rows)
-        self.con.execute("DELETE FROM feed WHERE id <= (SELECT MAX(id) FROM feed) - ?", (keep,))
+        self.con.execute("DELETE FROM feed WHERE id NOT IN (SELECT id FROM feed ORDER BY ts DESC, id DESC LIMIT ?)", (keep,))
         self.con.commit()
 
-    def feed(self, limit: int = 100):
-        return self._rows("SELECT * FROM feed ORDER BY id DESC LIMIT ?", limit)
+    def feed(self, limit: int = 500):
+        return self._rows("SELECT * FROM feed ORDER BY ts DESC, id DESC LIMIT ?", limit)
 
     # ------------------------------------------------------------------ lecture
     def _rows(self, sql, *a):

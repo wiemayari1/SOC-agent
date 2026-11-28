@@ -1,7 +1,7 @@
 {
   "autonomy_level": 3,
   "_autonomy_help": "1 = l'agent propose seulement ; 2 = l'agent prépare et demande validation humaine ; 3 = l'agent exécute les actions autorisées (sauf actions sensibles).",
-  "protected_ips": ["192.168.26.134"],
+  "protected_ips": ["192.168.19.1", "10.29.227.26", "10.29.227.46"],
   "protected_hosts": ["srv-core"],
   "actions": {
     "block_ip":       {"auto": true,  "min_cf": 0.65, "ttl_seconds": 3600, "description": "Blocage temporaire d'une IP (pare-feu simulé)"},

@@ -10,6 +10,7 @@
 // ------------------------------------------------------------------ libellés
   const SCEN = { ssh_bruteforce: 'Force brute SSH', port_scan: 'Scan de ports', web_sqli: 'Injection SQL', malicious_file: 'Fichier malveillant' };
   const SEV = { critical: 'Critique', high: 'Élevée', medium: 'Moyenne', low: 'Faible', info: 'Info' };
+  const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
   const ACT = { block_ip: 'Bloquer l’IP', quarantine_file: 'Mettre en quarantaine', isolate_host: 'Isoler la machine', notify_analyst: 'Notifier l’analyste', monitor: 'Surveiller' };
   const DEC = { executed: ['Exécutée', 'ok'], failed: ['Échec', 'danger'], pending_approval: ['En attente', 'warn'], proposed: ['Proposée', 'info'],
     denied: ['Refusée', 'danger'], rejected: ['Rejetée', 'muted'], rolled_back: ['Annulée', 'muted'] };
@@ -24,8 +25,19 @@
     ['feed', 'Flux Wazuh', 'M3 12h4l3-8 4 16 3-8h4'],
     ['response', 'Réponse', 'M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z'],
     ['system', 'Système', 'M4 6h16M4 12h16M4 18h16']];
+  const LIMIT_OPTS = [['10', '10 lignes'], ['25', '25 lignes'], ['50', '50 lignes'], ['100', '100 lignes'], ['all', 'Tous']];
 
-  const state = { tab: 'summary', filters: { q: '', severity: '', scenario: '', status: '' }, summary: null, detailSig: null };
+  const state = {
+    tab: 'summary',
+    filters: { q: '', severity: '', scenario: '', status: '' },
+    incidentsLimit: '25',
+    sort: { key: 'first_ts', dir: -1 },
+    feedFilters: { q: '', minLevel: '' },
+    feedLimit: '25',
+    paused: false,
+    summary: null,
+    detailSig: null,
+  };
 
 // ------------------------------------------------------------------ DOM sûr
   function add(n, kids) { for (const c of kids.flat(Infinity)) { if (c == null || c === false) continue; n.append(c.nodeType ? c : document.createTextNode(String(c))); } }
@@ -71,6 +83,34 @@
   const verdictVariant = (v) => v.includes('confirmée') ? 'danger' : v.includes('probable') ? 'warn' : v.includes('possible') ? 'info' : v.startsWith('bénin') ? 'ok' : 'muted';
   const code = (t) => el('code', { class: 'code', text: t });
   const empty = (title, hint) => el('div', { class: 'empty' }, el('div', { class: 'empty-title', text: title }), hint ? el('div', { class: 'empty-hint', text: hint }) : null);
+  function expandableText(text, maxLen = 110, cls = '') {
+    const s = String(text || '');
+    if (!s || s.length <= maxLen) return el('div', { class: cls, text: s });
+    let open = false;
+    const short = s.slice(0, maxLen).trimEnd() + '…';
+    const txt = el('span', { text: short });
+    const btn = el('button', {
+      type: 'button',
+      class: 'expand-btn',
+      text: 'Voir plus',
+      onclick: (e) => {
+        e.stopPropagation();
+        open = !open;
+        txt.textContent = open ? s : short;
+        btn.textContent = open ? 'Réduire' : 'Voir plus';
+      },
+    });
+    return el('div', { class: cls }, txt, btn);
+  }
+  function applyLimit(rows, limit) {
+    return limit === 'all' ? rows : rows.slice(0, Number(limit) || 25);
+  }
+  function limitSelect(current, onChange) {
+    return el('label', { class: 'field' },
+      el('span', { class: 'field-label', text: 'Afficher' }),
+      el('select', { onchange: (e) => onChange(e.target.value) },
+        LIMIT_OPTS.map(([v, t]) => el('option', { value: v, text: t, selected: current === v }))));
+  }
   function cfBar(cf, variant) {
     const bar = el('div', { class: 'cfbar', role: 'img', 'aria-label': `Certitude ${pct(cf)}` }, el('span', { class: `cfbar-fill ${variant || ''}` }));
     bar.firstChild.style.width = Math.max(0, Math.min(100, cf * 100)) + '%';
@@ -87,7 +127,7 @@
   const card = (title, ...kids) => el('section', { class: 'card' }, title ? el('h2', { class: 'card-title', text: title }) : null, kids);
   function table(headers, rows, cls = '') {
     return el('div', { class: 'table-wrap' }, el('table', { class: `table ${cls}` },
-        el('thead', {}, el('tr', {}, headers.map((h) => el('th', { scope: 'col', text: h })))), el('tbody', {}, rows)));
+        el('thead', {}, el('tr', {}, headers.map((h) => el('th', { scope: 'col' }, h)))), el('tbody', {}, rows)));
   }
   function confirmButton(label, variant, onConfirm) {
     let timer = null;
@@ -112,21 +152,87 @@
 
 // ------------------------------------------------------------------ graphiques (SVG, thème via CSS)
   function barChart(tl) {
-    if (!tl.length) return empty('Aucun incident pour le moment', 'Les incidents apparaîtront ici dès qu’une alerte sera traitée.');
-    const W = 640, H = 200, pl = 34, pb = 28, pt = 10, pr = 8, iw = W - pl - pr, ih = H - pt - pb;
-    const max = Math.max(1, ...tl.map((b) => b.count)), bw = iw / tl.length;
+    if (!tl.length) return empty('Aucun incident');
+    const W = 680, H = 210, pl = 34, pb = 30, pt = 20, pr = 12, iw = W - pl - pr, ih = H - pt - pb;
+    const rawMax = Math.max(1, ...tl.map((b) => b.count || 0));
+    const ticks = [];
+    if (rawMax <= 4) {
+      for (let v = 0; v <= rawMax; v++) ticks.push(v);
+    } else {
+      const step = Math.ceil(rawMax / 4);
+      for (let v = 0; v <= rawMax; v += step) ticks.push(v);
+      if (ticks[ticks.length - 1] < rawMax) ticks.push(ticks[ticks.length - 1] + step);
+    }
+    const yMax = ticks[ticks.length - 1], bw = iw / tl.length;
+    const labelEvery = tl.length > 10 ? Math.ceil(tl.length / 8) : 1;
     const g = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': 'Incidents au cours du temps' });
-    [0, 0.5, 1].forEach((f) => {
-      const y = pt + ih * (1 - f);
-      g.append(sv('line', { x1: pl, x2: W - pr, y1: y, y2: y, class: 'grid' }), sv('text', { x: pl - 6, y: y + 4, class: 'axis', 'text-anchor': 'end' }, String(Math.round(max * f))));
+    ticks.forEach((v) => {
+      const y = pt + ih * (1 - v / yMax);
+      g.append(sv('line', { x1: pl, x2: W - pr, y1: y, y2: y, class: 'grid' }), sv('text', { x: pl - 8, y: y + 4, class: 'axis', 'text-anchor': 'end' }, String(v)));
     });
     tl.forEach((b, i) => {
-      const x = pl + i * bw + bw * 0.15, w = bw * 0.7, h = ih * b.count / max, hc = ih * b.critical / max;
-      g.append(sv('rect', { x, y: pt + ih - h, width: w, height: h, rx: 3, class: 'bar' }, sv('title', {}, `${ft(b.t)} — ${b.count} incident(s), dont ${b.critical} critique(s)/élevé(s)`)));
-      if (b.critical) g.append(sv('rect', { x, y: pt + ih - hc, width: w, height: hc, rx: 3, class: 'bar-crit' }));
+      const count = b.count || 0, crit = b.critical || 0, other = Math.max(0, count - crit);
+      const w = Math.min(48, bw * 0.68), x = pl + i * bw + (bw - w) / 2, cx = x + w / 2;
+      const hc = ih * crit / yMax, ho = ih * other / yMax, ht = hc + ho;
+      const lbl = b.label || ft(b.t).slice(11, 16);
+      const tip = `${lbl}${b.end ? ' → ' + ft(b.end).slice(11, 16) : ''} : ${count} incident(s)` + (crit ? ` dont ${crit} critique(s)/élevé(s)` : '');
+      if (crit) g.append(sv('rect', { x, y: pt + ih - hc, width: w, height: hc, rx: 2, class: 'bar-crit' }, sv('title', {}, tip)));
+      if (other) g.append(sv('rect', { x, y: pt + ih - ht, width: w, height: ho, rx: 2, class: 'bar' }, sv('title', {}, tip)));
+      if (count) g.append(sv('text', { x: cx, y: pt + ih - ht - 5, class: 'cf-val', 'text-anchor': 'middle' }, String(count)));
+      if (i % labelEvery === 0 || i === tl.length - 1) {
+        g.append(sv('text', { x: cx, y: H - 8, class: 'axis', 'text-anchor': 'middle' }, lbl));
+      }
     });
-    g.append(sv('text', { x: pl, y: H - 8, class: 'axis' }, ft(tl[0].t).slice(5, 16)), sv('text', { x: W - pr, y: H - 8, class: 'axis', 'text-anchor': 'end' }, ft(tl[tl.length - 1].t).slice(5, 16)));
     return g;
+  }
+  function cfChart(steps, finalCf) {
+    const pts = [];
+    let lastTool = null;
+    for (const s of steps) {
+      if (s.kind === 'reasoning') {
+        const m = s.text.match(/certitude\s+(\d+(?:\.\d+)?)/i);
+        if (m) pts.push({ label: 'Initial', cf: parseFloat(m[1]) });
+      } else if (s.kind === 'action' && s.tool) {
+        lastTool = s.tool;
+      } else if (s.kind === 'evaluation') {
+        const m = s.text.match(/Certitude\s+\d+(?:\.\d+)?\s*(?:→|->)\s*(\d+(?:\.\d+)?)/i);
+        if (m) {
+          pts.push({ label: lastTool || `Étape ${pts.length}`, cf: parseFloat(m[1]) });
+          lastTool = null;
+        }
+      }
+    }
+    if (!pts.length && finalCf != null) pts.push({ label: 'Verdict', cf: finalCf });
+    if (!pts.length) return null;
+    const W = 900, H = 175, pl = 75, pr = 75, pt = 22, pb = 34, iw = W - pl - pr, ih = H - pt - pb;
+    const g = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': 'Évolution de la certitude de l’agent' });
+    [0, 0.5, 1].forEach((f) => {
+      const y = pt + ih * (1 - f);
+      g.append(sv('line', { x1: pl, x2: W - pr, y1: y, y2: y, class: 'grid' }), sv('text', { x: pl - 10, y: y + 4, class: 'axis', 'text-anchor': 'end' }, f.toFixed(1)));
+    });
+    const y60 = pt + ih * (1 - 0.6), y85 = pt + ih * (1 - 0.85);
+    g.append(sv('line', { x1: pl, x2: W - pr, y1: y60, y2: y60, class: 'cf-thresh' }), sv('line', { x1: pl, x2: W - pr, y1: y85, y2: y85, class: 'cf-thresh-hi' }));
+    const coords = pts.map((p, i) => ({
+      x: pts.length === 1 ? pl + iw / 2 : pl + (iw * i) / (pts.length - 1),
+      y: pt + ih * (1 - Math.max(0, Math.min(1, p.cf))),
+      ...p,
+    }));
+    if (coords.length > 1) {
+      const lineD = coords.map((c, i) => `${i ? 'L' : 'M'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+      const areaD = `${lineD} L${coords[coords.length - 1].x.toFixed(1)},${pt + ih} L${coords[0].x.toFixed(1)},${pt + ih} Z`;
+      g.append(sv('path', { d: areaD, class: 'cf-area' }), sv('path', { d: lineD, class: 'cf-line' }));
+    }
+    coords.forEach((c) => {
+      g.append(
+        sv('circle', { cx: c.x, cy: c.y, r: 4.5, class: 'cf-dot' }, sv('title', {}, `${c.label} : certitude ${c.cf.toFixed(2)}`)),
+        sv('text', { x: c.x, y: c.y - 9, class: 'cf-val', 'text-anchor': 'middle' }, c.cf.toFixed(2)),
+        sv('text', { x: c.x, y: pt + ih + 20, class: 'axis', 'text-anchor': 'middle' }, c.label),
+      );
+    });
+    return el('div', {}, g, el('div', { class: 'chart-legend' },
+      el('span', { class: 'swatch sw-bar' }), 'Certitude principale',
+      el('span', { class: 'swatch sw-warn' }), 'Seuil probable (0.60)',
+      el('span', { class: 'swatch sw-bar-crit' }), 'Seuil confirmée (0.85)'));
   }
   function donut(by) {
     const keys = Object.keys(SEV), total = keys.reduce((a, k) => a + (by[k] || 0), 0);
@@ -165,7 +271,34 @@
         el('td', { class: 'muted nowrap', text: ft(i.first_ts) }));
     return tr;
   }
-  const INC_HEAD = ['Sévérité', 'ID', 'Scénario', 'Source', 'Verdict', 'Certitude', 'Statut', 'Début'];
+
+  function sortHeader(label, key) {
+    const active = state.sort.key === key;
+    const arrow = active ? (state.sort.dir > 0 ? '▲' : '▼') : '↕';
+    return el('button', {
+      type: 'button',
+      class: `sort-btn ${active ? 'active' : ''}`,
+      title: `Trier par ${label.toLowerCase()}`,
+      onclick: () => {
+        if (state.sort.key === key) state.sort.dir *= -1;
+        else { state.sort.key = key; state.sort.dir = -1; }
+        render();
+      },
+    }, label, el('span', { class: 'sort-arrow', 'aria-hidden': 'true', text: arrow }));
+  }
+
+  function sortIncidents(rows) {
+    const { key, dir } = state.sort;
+    return [...rows].sort((a, b) => {
+      let va, vb;
+      if (key === 'severity') { va = SEV_RANK[a.severity] ?? -1; vb = SEV_RANK[b.severity] ?? -1; }
+      else if (key === 'confidence') { va = Number(a.confidence || 0); vb = Number(b.confidence || 0); }
+      else { va = String(a[key] || ''); vb = String(b[key] || ''); }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return String(b.first_ts || '').localeCompare(String(a.first_ts || ''));
+    });
+  }
 
   function pendingCard(d, compact) {
     return el('div', { class: 'pending-card' },
@@ -179,40 +312,47 @@
   }
 
 // ------------------------------------------------------------------ vues
-  function modeText(live) {
-    if (live.mode === 'live') return `Surveillance Wazuh en continu — source : ${live.source}`;
-    if (live.mode === 'demo') return 'Mode démonstration : données simulées (aucune connexion Wazuh)';
-    return 'Aucune source active — démarrez le serveur avec --live (Wazuh) ou --demo (données simulées)';
-  }
-
   async function viewOverview() {
     const d = await api('/api/overview'), k = d.kpi;
-    const kpis = [['Incidents', k.incidents, 'détectés au total', ''], ['Critiques / élevés', k.critical_high, 'à traiter en priorité', k.critical_high ? 'danger' : ''],
-      ['En attente de validation', k.pending, 'décisions humaines requises', k.pending ? 'warn' : ''], ['Traités automatiquement', k.auto_handled, 'actions exécutées et vérifiées', 'ok'],
-      ['Faux positifs écartés', k.false_positives, 'classés bénins par l’agent', ''], ['IP bloquées', k.blocked, 'pare-feu simulé', '']];
-    return page('Tableau de bord', modeText(d.live),
-        el('div', { class: 'kpi-grid' }, kpis.map(([l, v, h, c]) => el('div', { class: `kpi ${c ? 'kpi-' + c : ''}` }, el('div', { class: 'kpi-label', text: l }), el('div', { class: 'kpi-value', text: String(v) }), el('div', { class: 'kpi-hint', text: h })))),
-        el('div', { class: 'grid-2' }, card('Incidents au cours du temps', barChart(d.timeline), el('div', { class: 'chart-legend' }, el('span', { class: 'swatch sw-bar' }), 'Tous les incidents', el('span', { class: 'swatch sw-bar-crit' }), 'dont critiques / élevés')),
+    const kpis = [
+      ['Incidents', k.incidents, ''],
+      ['Critiques / élevés', k.critical_high, k.critical_high ? 'danger' : ''],
+      ['En attente de validation', k.pending, k.pending ? 'warn' : ''],
+      ['Traités automatiquement', k.auto_handled, 'ok'],
+      ['Faux positifs écartés', k.false_positives, ''],
+      ['IP bloquées', k.blocked, ''],
+    ];
+    return page('Tableau de bord', null,
+        el('div', { class: 'kpi-grid' }, kpis.map(([l, v, c]) => el('div', { class: `kpi ${c ? 'kpi-' + c : ''}` }, el('div', { class: 'kpi-label', text: l }), el('div', { class: 'kpi-value', text: String(v) })))),
+        el('div', { class: 'grid-2' },
+            card('Incidents au cours du temps', barChart(d.timeline),
+                el('div', { class: 'chart-legend' }, el('span', { class: 'swatch sw-bar-crit' }), 'Critiques / élevés', el('span', { class: 'swatch sw-bar' }), 'Autres incidents')),
             card('Répartition par sévérité', donut(d.by_severity))),
-        el('div', { class: 'grid-2' }, card('Incidents récents', d.recent.length ? table(INC_HEAD, d.recent.map(incidentRow)) : empty('Aucun incident', 'En attente d’alertes.')),
-            el('div', { class: 'stack' }, card('Par scénario', hbars(d.by_scenario)),
-                card('À valider', d.pending.length ? el('div', { class: 'stack-sm' }, d.pending.map((p) => pendingCard(p, true)), el('a', { class: 'btn btn-ghost', href: '#/approvals', text: 'Ouvrir les validations' })) : empty('Rien à valider', 'Aucune décision humaine en attente.')))));
+        el('div', { class: 'stack' },
+            card('Scénarios détectés', hbars(d.by_scenario)),
+            card('À valider', d.pending.length
+                ? el('div', { class: 'stack-sm' }, d.pending.map((p) => pendingCard(p, true)), el('a', { class: 'btn btn-ghost', href: '#/approvals', text: 'Ouvrir les validations' }))
+                : empty('Aucune validation en attente'))));
   }
 
   async function viewIncidents() {
     const f = state.filters, qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
-    const rows = await api('/api/incidents' + (qs ? '?' + qs : ''));
+    const rows = sortIncidents(await api('/api/incidents' + (qs ? '?' + qs : '')));
+    const shown = applyLimit(rows, state.incidentsLimit);
     const sel = (name, label, opts) => el('label', { class: 'field' }, el('span', { class: 'field-label', text: label }),
         el('select', { onchange: (e) => { f[name] = e.target.value; render(); } }, el('option', { value: '', text: 'Tous' }), Object.entries(opts).map(([v, t]) => el('option', { value: v, text: t, selected: f[name] === v }))));
     const search = el('input', { type: 'search', class: 'input', placeholder: 'ID, IP, verdict, scénario…', value: f.q, 'aria-label': 'Rechercher',
       oninput: (e) => { f.q = e.target.value; clearTimeout(search._t); search._t = setTimeout(render, 250); } });
-    return page('Incidents', 'Chaque incident est une enquête complète : analyse, outils utilisés, décision et vérification.',
+    const head = [sortHeader('Sévérité', 'severity'), 'ID', 'Scénario', 'Source', 'Verdict', sortHeader('Certitude', 'confidence'), sortHeader('Statut', 'status'), sortHeader('Début', 'first_ts')];
+    const countTxt = shown.length < rows.length ? `Affichage de ${shown.length} sur ${rows.length} incident(s)` : `${rows.length} incident(s)`;
+    return page('Incidents', null,
         card(null, el('div', { class: 'toolbar' }, el('label', { class: 'field grow' }, el('span', { class: 'field-label', text: 'Recherche' }), search),
                 sel('severity', 'Sévérité', SEV), sel('scenario', 'Scénario', SCEN),
                 sel('status', 'Statut', { 'traité (action vérifiée)': 'Traité', 'en attente de validation': 'En attente de validation', 'clos (faux positif)': 'Faux positif', 'à traiter par l’analyste': 'À traiter par l’analyste', 'clos (aucune action)': 'Clos' }),
-                el('button', { type: 'button', class: 'btn btn-ghost', text: 'Réinitialiser', onclick: () => { Object.assign(f, { q: '', severity: '', scenario: '', status: '' }); render(); } })),
-            el('div', { class: 'muted small result-count', text: `${rows.length} incident(s)` }),
-            rows.length ? table(INC_HEAD, rows.map(incidentRow)) : empty('Aucun incident ne correspond', 'Modifiez ou réinitialisez les filtres.')));
+                limitSelect(state.incidentsLimit, (v) => { state.incidentsLimit = v; render(); }),
+                el('button', { type: 'button', class: 'btn btn-ghost', text: 'Réinitialiser', onclick: () => { Object.assign(f, { q: '', severity: '', scenario: '', status: '' }); state.incidentsLimit = '25'; state.sort = { key: 'first_ts', dir: -1 }; render(); } })),
+            el('div', { class: 'muted small result-count', text: countTxt }),
+            shown.length ? table(head, shown.map(incidentRow)) : empty('Aucun incident')));
   }
 
   function detailSignature(d) {
@@ -228,18 +368,27 @@
     };
     const hyps = Object.entries(d.hypotheses).sort((a, b) => b[1] - a[1]);
     const pendingN = d.decisions.filter((x) => x.status === 'pending_approval').length;
+    const curve = cfChart(d.steps, inc.confidence);
+    const stopReason = String(inc.stop_reason || '').replace(/\s*\([^)]*[<>≥≤][^)]*\)/g, '').trim();
+    const conclusionRows = [
+      ['Verdict', badge(inc.verdict, verdictVariant(inc.verdict))],
+      ...(inc.hypothesis ? [['Hypothèse', el('strong', { text: HYP[inc.hypothesis] || inc.hypothesis })]] : []),
+      ['Sévérité', sevBadge(inc.severity)],
+      ['Fin d’enquête', el('span', { text: stopReason ? stopReason[0].toUpperCase() + stopReason.slice(1) : '—' })],
+    ];
 
     const tabs = {
       summary: ['Synthèse', () => el('div', { class: 'stack' },
-          card('Conclusion de l’agent', el('p', { class: 'lead' }, 'Verdict : ', el('strong', { text: inc.verdict }), inc.hypothesis ? [' — hypothèse ', el('strong', { text: HYP[inc.hypothesis] || inc.hypothesis })] : null, `. Sévérité ${SEV[inc.severity] || inc.severity}.`),
-              el('p', { class: 'muted', text: `Fin d’enquête : ${inc.stop_reason}.` })),
-          card('Hypothèses et certitudes', hyps.length ? el('div', { class: 'hyps' }, hyps.map(([k, v]) => el('div', { class: 'hyp' }, el('span', { class: 'hyp-name', text: HYP[k] || k }), cfBar(v, k.startsWith('benign') ? 'ok' : '')))) : empty('Aucune hypothèse', 'L’agent n’a repéré aucune preuve.')),
+          card('Conclusion de l’agent', el('dl', { class: 'facts' }, conclusionRows.map(([k, v]) => [el('dt', { text: k }), el('dd', {}, v)]))),
+          card('Hypothèses et certitudes', hyps.length ? el('div', { class: 'hyps' }, hyps.map(([k, v]) => el('div', { class: 'hyp' }, el('span', { class: 'hyp-name', text: HYP[k] || k }), cfBar(v, k.startsWith('benign') ? 'ok' : '')))) : empty('Aucune hypothèse')),
           card('Faits clés', factsGrid(d.facts, true)))],
-      reasoning: ['Raisonnement de l’agent', () => card('Révision des croyances — preuves retenues', el('p', { class: 'muted small', text: 'Chaque ligne est une preuve repérée par l’agent dans ce qu’il a observé. Les preuves d’une même hypothèse s’accumulent : certitude = a + b × (1 − a).' }),
-          d.reasoning.length ? table(['Révision', 'Preuve', 'Constat (valeur réelle)', 'Effet sur les croyances', 'Poids'], d.reasoning.map((f) => el('tr', {},
-              el('td', { text: String(f.step) }), el('td', {}, el('div', {}, code(f.ev_id), ' ', el('strong', { text: f.label })), el('div', { class: 'muted small', text: f.detail })),
-              el('td', {}, f.observed.map((m) => el('div', { class: 'cond' }, code(`${m.fact} ${m.op} ${m.value}`), el('span', { class: 'muted small', text: ` réel : ${val(m.actual)}` })))),
-              el('td', {}, f.effects.map((c) => el('div', { class: 'small', text: c }))), el('td', {}, cfBar(f.weight))))) : empty('Aucune preuve retenue'))],
+      reasoning: ['Raisonnement de l’agent', () => el('div', { class: 'stack' },
+          curve ? card('Évolution de la certitude au fil de l’enquête', curve) : null,
+          card('Preuves retenues',
+              d.reasoning.length ? table(['Révision', 'Preuve', 'Constat (valeur réelle)', 'Effet sur les croyances', 'Poids'], d.reasoning.map((f) => el('tr', {},
+                  el('td', { text: String(f.step) }), el('td', {}, el('div', {}, code(f.ev_id), ' ', el('strong', { text: f.label })), el('div', { class: 'muted small', text: f.detail })),
+                  el('td', {}, f.observed.map((m) => el('div', { class: 'cond' }, code(`${m.fact} ${m.op} ${m.value}`), el('span', { class: 'muted small', text: ` réel : ${val(m.actual)}` })))),
+                  el('td', {}, f.effects.map((c) => el('div', { class: 'small', text: c }))), el('td', {}, cfBar(f.weight))))) : empty('Aucune preuve retenue')))],
       steps: ['Investigation', () => card('Déroulé de l’enquête', el('ol', { class: 'timeline' }, d.steps.map((s) => el('li', { class: `tl-item k-${s.kind}` }, el('span', { class: 'tl-dot' }),
           el('div', { class: 'tl-body' }, el('div', { class: 'tl-head' }, el('span', { class: 'tl-kind', text: `${s.n}. ${STEP[s.kind] || s.kind}` }), s.tool ? code(s.tool) : null, el('span', { class: 'muted small nowrap', text: ft(s.ts).slice(11) })),
               el('div', { class: 'tl-text', text: s.text }))))))],
@@ -249,7 +398,7 @@
           x.status === 'pending_approval' ? el('div', { class: 'btn-row' }, confirmButton('Approuver', 'primary', () => doAct(`/api/decisions/${x.id}/approve`)), confirmButton('Rejeter', 'danger-outline', () => doAct(`/api/decisions/${x.id}/reject`, 'Décision rejetée'))) : null,
           x.actions.map((a) => el('div', { class: 'action-line' }, el('span', { text: a.detail }), a.verified ? badge('vérifiée', 'ok') : badge('non vérifiée', 'danger'), a.rolled_back ? badge('annulée', 'muted') : null,
               el('div', { class: 'muted small', text: `Contrôle : ${a.verification}` }),
-              !a.rolled_back && a.action !== 'notify_analyst' && a.ok ? confirmButton('Annuler l’action', 'ghost', () => doAct(`/api/actions/${a.id}/rollback`)) : null))))) : empty('Aucune action', 'L’agent n’a proposé aucune réponse pour cet incident.')))],
+              !a.rolled_back && a.action !== 'notify_analyst' && a.ok ? confirmButton('Annuler l’action', 'ghost', () => doAct(`/api/actions/${a.id}/rollback`)) : null))))) : empty('Aucune action')))],
       evidence: ['Preuves', () => el('div', { class: 'stack' }, card('Extraits des journaux', el('pre', { class: 'logbox', text: d.evidence.join('\n') || '—' })), card('Tous les faits extraits', factsGrid(d.facts, false)))],
       audit: ['Audit', () => card('Journal d’audit', d.audit.length ? table(['Heure', 'Acteur', 'Événement', 'Détail'], d.audit.map((a) => el('tr', {}, el('td', { class: 'nowrap muted', text: ft(a.ts) }), el('td', {}, badge(a.actor, 'info')), el('td', { text: a.event }), el('td', { class: 'muted', text: a.detail || '' })))) : empty('Aucun événement'))],
     };
@@ -275,7 +424,7 @@
   }
   function factsGrid(facts, key) {
     const KEY = ['ssh_failed_in_window', 'ssh_distinct_users', 'ssh_success_after_failures', 'post_login_suspicious_cmds', 'scan_distinct_ports', 'scan_sequential_ratio', 'web_sqli_strong_hits', 'web_scanner_ua', 'web_error_after_sqli',
-      'file_path', 'file_hash_known_malicious', 'file_ransom_burst_count', 'file_affected_total', 'ip_blacklisted', 'ip_multi_stage', 'ip_scenarios', 'src_is_internal'];
+      'file_path', 'file_hash_known_malicious', 'file_hash_mismatch', 'file_ransom_burst_count', 'file_affected_total', 'ip_blacklisted', 'ip_multi_stage', 'ip_scenarios', 'src_is_internal'];
     const entries = Object.entries(facts).filter(([k]) => !key || KEY.includes(k));
     if (!entries.length) return empty('Aucun fait');
     return el('dl', { class: 'facts' }, entries.map(([k, v]) => [el('dt', {}, code(k)), el('dd', { text: val(v) })]));
@@ -283,42 +432,75 @@
 
   async function viewApprovals() {
     const rows = await api('/api/pending');
-    return page('Validations humaines', 'Actions sensibles ou à confiance insuffisante : elles ne sont exécutées qu’après votre accord, puis vérifiées.',
-        rows.length ? el('div', { class: 'stack' }, rows.map((d) => el('section', { class: 'card' }, pendingCard(d, false), el('div', { class: 'muted small', text: d.incident_title })))) : card(null, empty('Aucune action en attente', 'Tout est à jour. Les nouvelles décisions à valider apparaîtront ici.')));
+    return page('Validations humaines', null,
+        rows.length ? el('div', { class: 'stack' }, rows.map((d) => el('section', { class: 'card' }, pendingCard(d, false), el('div', { class: 'muted small', text: d.incident_title })))) : card(null, empty('Aucune action en attente')));
   }
 
   async function viewFeed() {
-    const d = await api('/api/feed?limit=150'), live = d.live;
+    const d = await api('/api/feed?limit=500'), live = d.live, ff = state.feedFilters;
     const lvl = (n) => badge(String(n), n >= 10 ? 'danger' : n >= 7 ? 'warn' : n >= 4 ? 'info' : 'muted');
-    return page('Flux Wazuh', live.mode === 'live' ? `Alertes reçues de ${live.source}` : 'Alertes Wazuh reçues en temps réel',
+    const q = ff.q.trim().toLowerCase();
+    const minL = ff.minLevel ? Number(ff.minLevel) : 0;
+    const rows = d.rows.filter((r) => {
+      if (minL && Number(r.level || 0) < minL) return false;
+      if (q) {
+        const hay = `${r.agent || ''} ${r.rule_id || ''} ${r.description || ''} ${r.summary || ''} ${r.src_ip || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const shown = applyLimit(rows, state.feedLimit);
+    const search = el('input', {
+      type: 'search', class: 'input', placeholder: 'Agent, règle, description, IP…', value: ff.q, 'aria-label': 'Filtrer le flux Wazuh',
+      oninput: (e) => { ff.q = e.target.value; clearTimeout(search._t); search._t = setTimeout(render, 200); },
+    });
+    const levelSel = el('select', { onchange: (e) => { ff.minLevel = e.target.value; render(); } },
+      [['', 'Tous'], ['4', 'Niveau ≥ 4'], ['7', 'Niveau ≥ 7'], ['10', 'Niveau ≥ 10']].map(([v, t]) => el('option', { value: v, text: t, selected: ff.minLevel === v })));
+    const countTxt = shown.length < rows.length
+      ? `Affichage de ${shown.length} sur ${rows.length} alerte(s)` + ((q || minL) ? ` (${d.rows.length} au total)` : '')
+      : ((q || minL) ? `${rows.length} / ${d.rows.length} alerte(s)` : `${d.rows.length} alerte(s)`);
+    return page('Flux Wazuh', null,
         live.mode === 'live' ? card(null, el('div', { class: 'stats-row' }, [['Alertes lues', live.hits_total], ['Événements en mémoire', live.buffer], ['Incidents créés', live.incidents_created], ['Dernière alerte', ago(live.last_event_age_seconds)]].map(([l, v]) => el('div', { class: 'stat' }, el('span', { class: 'stat-l', text: l }), el('b', { text: String(v) }))))) : null,
-        card(null, d.rows.length ? table(['Heure (UTC)', 'Agent', 'Règle', 'Niveau', 'Description', 'IP source'], d.rows.map((r) => el('tr', {}, el('td', { class: 'nowrap muted', text: ft(r.ts) }), el('td', { text: r.agent }), el('td', {}, code(r.rule_id || '—')), el('td', {}, lvl(r.level)),
-                el('td', {}, el('div', { text: r.description }), el('div', { class: 'muted small mono-clip', text: r.summary })), el('td', {}, r.src_ip ? code(r.src_ip) : '—')))) :
-            empty('Aucune alerte reçue', live.mode === 'live' ? 'La connexion est établie mais aucune alerte n’est encore arrivée.' : 'Ce flux s’alimente en mode Wazuh : python -m soc.main serve --live (voir README, section 10).')));
+        card(null,
+            el('div', { class: 'toolbar' },
+                el('label', { class: 'field grow' }, el('span', { class: 'field-label', text: 'Recherche' }), search),
+                el('label', { class: 'field' }, el('span', { class: 'field-label', text: 'Niveau minimum' }), levelSel),
+                limitSelect(state.feedLimit, (v) => { state.feedLimit = v; render(); }),
+                el('button', { type: 'button', class: 'btn btn-ghost', text: 'Réinitialiser', onclick: () => { Object.assign(ff, { q: '', minLevel: '' }); state.feedLimit = '25'; render(); } })),
+            el('div', { class: 'muted small result-count', text: countTxt }),
+            shown.length ? table(['Heure (UTC)', 'Agent', 'Règle', 'Niveau', 'Description', 'IP source'], shown.map((r) => el('tr', {}, el('td', { class: 'nowrap muted', text: ft(r.ts) }), el('td', { text: r.agent }), el('td', {}, code(r.rule_id || '—')), el('td', {}, lvl(r.level)),
+                el('td', {}, expandableText(r.description, 95), expandableText(r.summary, 110, 'muted small mono-clip')), el('td', {}, r.src_ip ? code(r.src_ip) : '—')))) :
+            empty(d.rows.length ? 'Aucun résultat' : 'Aucune alerte')));
   }
 
   async function viewResponse() {
     const d = await api('/api/firewall'), s = d.state;
     const kv = (obj, cols) => Object.keys(obj).length ? table(cols, Object.entries(obj).map(([k, v]) => el('tr', {}, el('td', {}, code(k)), el('td', { class: 'muted', text: ft(v.since) }), el('td', { class: 'muted', text: v.expires ? ft(v.expires) : (v.note || '') })))) : empty('Aucune entrée');
-    return page('Réponse', 'État des actions exécutées par l’agent.', el('div', { class: 'notice' }, el('strong', { text: 'Actions simulées. ' }), 'Aucune règle n’est appliquée sur un pare-feu réel : l’état ci-dessous est un journal contrôlé, vérifiable et réversible.'),
-        el('div', { class: 'grid-2 eq' }, card('IP bloquées', kv(s.blocked, ['IP', 'Depuis', 'Expire'])), card('Machines isolées', kv(s.isolated_hosts, ['Machine', 'Depuis', ''])),
-            card('Liste de surveillance', kv(s.watchlist, ['Cible', 'Depuis', 'Note'])),
-            card('Quarantaine', (Object.keys(s.quarantine).length || Object.keys(s.quarantine_sim || {}).length) ? table(['Fichier d’origine', 'Mode'], [...Object.values(s.quarantine).map((q) => el('tr', {}, el('td', {}, code(q.original)), el('td', { text: 'Bac à sable (déplacé)' }))), ...Object.keys(s.quarantine_sim || {}).map((p) => el('tr', {}, el('td', {}, code(p)), el('td', { text: 'Simulée (fichier distant)' })))]) : empty('Aucun fichier en quarantaine'))),
-        card('Notifications à l’analyste', d.notifications.length ? table(['Heure', 'Incident', 'Message'], d.notifications.map((n) => el('tr', {}, el('td', { class: 'muted nowrap', text: ft(n.ts) }), el('td', {}, el('a', { href: `#/incidents/${n.incident}`, text: n.incident })), el('td', { text: n.message })))) : empty('Aucune notification')));
+    const nBlocked = Object.keys(s.blocked).length;
+    const nIsolated = Object.keys(s.isolated_hosts).length;
+    const nWatch = Object.keys(s.watchlist).length;
+    const nQuar = Object.keys(s.quarantine).length + Object.keys(s.quarantine_sim || {}).length;
+    return page('Réponse', null,
+        el('div', { class: 'grid-2 eq' },
+            card(`IP bloquées (${nBlocked})`, kv(s.blocked, ['IP', 'Depuis', 'Expire'])),
+            card(`Machines isolées (${nIsolated})`, kv(s.isolated_hosts, ['Machine', 'Depuis', ''])),
+            card(`Liste de surveillance (${nWatch})`, kv(s.watchlist, ['Cible', 'Depuis', 'Note'])),
+            card(`Quarantaine (${nQuar})`, nQuar ? table(['Fichier d’origine', 'Mode'], [...Object.values(s.quarantine).map((q) => el('tr', {}, el('td', {}, code(q.original)), el('td', { text: 'Bac à sable (déplacé)' }))), ...Object.keys(s.quarantine_sim || {}).map((p) => el('tr', {}, el('td', {}, code(p)), el('td', { text: 'Simulée (fichier distant)' })))]) : empty('Aucun fichier en quarantaine'))),
+        card(`Notifications à l’analyste (${d.notifications.length})`, d.notifications.length ? table(['Heure', 'Incident', 'Message'], d.notifications.map((n) => el('tr', {}, el('td', { class: 'muted nowrap', text: ft(n.ts) }), el('td', {}, el('a', { href: `#/incidents/${n.incident}`, text: n.incident })), el('td', { text: n.message })))) : empty('Aucune notification')));
   }
 
   async function viewSystem() {
     const d = await api('/api/system'), p = d.policy, live = d.live, w = d.wazuh;
     const row = (k, v) => [el('dt', { text: k }), el('dd', {}, v)];
     const ag = d.agents;
-    return page('Système', 'Connexion Wazuh, politique de sécurité de l’agent et renseignement local (IOC).',
+    return page('Système', null,
         el('div', { class: 'grid-2 eq' }, card('Connexion Wazuh', el('dl', { class: 'facts' },
                 row('État', live.mode === 'live' ? badge(live.ok ? (live.stale ? 'en pause' : 'connecté') : 'injoignable', live.ok && !live.stale ? 'ok' : 'danger') : badge(live.mode === 'demo' ? 'démonstration' : 'inactif', 'muted')),
                 w ? [row('Mode', w.mode), row('Source', w.mode === 'file' ? w.file : `${w.indexer_url} (${w.index_pattern})`), row('API serveur', w.api_url || '—'), row('Intervalle', `${w.poll_seconds} s`), row('Délai de stabilisation', `${w.settle_seconds} s`), row('Fenêtre d’analyse', `${w.window_minutes} min`)] : row('Configuration', 'config/wazuh.json absent'),
                 live.message ? row('Dernier message', live.message) : null, live.last_poll ? row('Dernier sondage', `${ft(live.last_poll)} UTC`) : null)),
             card('Autonomie et sécurité', el('dl', { class: 'facts' }, row('Niveau d’autonomie', `${p.autonomy_level} / 3`), row('IP protégées', p.protected_ips.join(', ') || '—'), row('Machines protégées', p.protected_hosts.join(', ') || '—'),
                 row('Étapes max. de l’agent', String(p.agent.max_steps)), row('Seuil de confirmation', String(p.agent.confirm_cf))))),
-        card('Agents Wazuh', !ag.configured ? empty('API Wazuh non configurée', 'Ajoutez la section « api » dans config/wazuh.json pour voir l’état des agents.') : !ag.ok ? empty('API Wazuh injoignable', ag.error) :
+        card('Agents Wazuh', !ag.configured ? empty('API Wazuh non configurée') : !ag.ok ? empty('API Wazuh injoignable', ag.error) :
             table(['ID', 'Nom', 'IP', 'État', 'Système', 'Version', 'Dernier signal'], ag.agents.map((a) => el('tr', {}, el('td', { text: a.id }), el('td', {}, el('strong', { text: a.name })), el('td', {}, code(a.ip || '—')), el('td', {}, badge(a.status || '—', a.status === 'active' ? 'ok' : 'danger')), el('td', { text: a.os }), el('td', { text: a.version || '' }), el('td', { class: 'muted', text: ft(a.last_keepalive) }))))),
         card('Actions autorisées (liste blanche)', table(['Action', 'Automatique', 'Certitude minimale', 'Description'], Object.entries(p.actions).map(([k, v]) => el('tr', {}, el('td', {}, code(k)), el('td', {}, badge(v.auto ? 'oui' : 'validation humaine', v.auto ? 'ok' : 'warn')), el('td', { text: v.min_cf.toFixed(2) }), el('td', { class: 'muted', text: v.description || '' }))))),
         card('Données de renseignement locales', el('dl', { class: 'facts' }, row('IP malveillantes (IOC)', String(d.knowledge.bad_ips)), row('Hash malveillants (IOC)', String(d.knowledge.bad_hashes)))));
@@ -346,8 +528,22 @@
     try {
       const node = await route.view(route.arg);
       if (token !== renderToken) return;
-      $('#view').replaceChildren(node);
+      const view = $('#view');
+      const active = document.activeElement;
+      const keepSearchFocus = active && view.contains(active) && active.tagName === 'INPUT' && active.type === 'search';
+      const selStart = keepSearchFocus ? active.selectionStart : null;
+      const selEnd = keepSearchFocus ? active.selectionEnd : null;
+      view.replaceChildren(node);
       updateNav(route);
+      if (keepSearchFocus) {
+        const nextSearch = $('input[type="search"]', view);
+        if (nextSearch) {
+          nextSearch.focus({ preventScroll: true });
+          if (selStart != null && selEnd != null) {
+            try { nextSearch.setSelectionRange(selStart, selEnd); } catch (e) { /* ignoré */ }
+          }
+        }
+      }
       if (y > 0 && typeof window.scrollTo === 'function') { try { window.scrollTo(0, y); } catch (e) { /* ignoré */ } }
     } catch (e) {
       if (token !== renderToken) return;
@@ -390,6 +586,7 @@
 
 // ------------------------------------------------------------------ rafraîchissement automatique
   async function tick() {
+    if (state.paused) return;
     await refreshSummary();
     const route = parseRoute(), view = $('#view');
     const typing = view.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
@@ -409,6 +606,24 @@
       const cur = document.documentElement.dataset.theme || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
       setTheme(cur === 'dark' ? 'light' : 'dark');
     });
+    const pauseBtn = $('#pause-btn');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', () => {
+        state.paused = !state.paused;
+        pauseBtn.classList.toggle('is-paused', state.paused);
+        pauseBtn.setAttribute('aria-pressed', String(state.paused));
+        pauseBtn.textContent = state.paused ? '\u25B6' : '\u275A\u275A';
+        pauseBtn.title = state.paused ? 'Reprendre le rafraîchissement automatique' : 'Mettre en pause le rafraîchissement automatique';
+        if (!state.paused) tick();
+      });
+    }
+    const refreshBtn = $('#refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', async () => {
+        await refreshSummary();
+        await render();
+      });
+    }
     $('#menu-btn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
     buildNav();
     window.addEventListener('hashchange', () => { state.tab = 'summary'; render(); });

@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .. import config, pipeline
 from ..events import utcnow
@@ -15,6 +15,67 @@ from ..storage import Database
 from ..wazuh import ManagerApi, WazuhError
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
+
+
+def _build_timeline(incs: list[dict]) -> list[dict]:
+    if not incs:
+        return []
+    ts = sorted(datetime.fromisoformat(i["first_ts"]) for i in incs)
+    lo, hi = ts[0], ts[-1]
+    span = (hi - lo).total_seconds()
+    if span <= 1800:
+        step_s = 300        # 5 min
+    elif span <= 7200:
+        step_s = 600        # 10 min
+    elif span <= 21600:
+        step_s = 1800       # 30 min
+    elif span <= 86400:
+        step_s = 3600       # 1 h
+    elif span <= 86400 * 3:
+        step_s = 14400      # 4 h
+    else:
+        step_s = 86400      # 1 jour
+
+    if step_s < 3600:
+        m = step_s // 60
+        start = lo.replace(minute=(lo.minute // m) * m, second=0, microsecond=0)
+    elif step_s < 86400:
+        h = step_s // 3600
+        start = lo.replace(hour=(lo.hour // h) * h, minute=0, second=0, microsecond=0)
+    else:
+        start = lo.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    delta = timedelta(seconds=step_s)
+    same_day = lo.date() == hi.date()
+    buckets = []
+    cur = start
+    while cur <= hi or not buckets:
+        end = cur + delta
+        if step_s >= 86400:
+            label = cur.strftime("%d/%m")
+        elif same_day:
+            label = cur.strftime("%H:%M")
+        else:
+            label = cur.strftime("%d/%m %H:%M")
+        buckets.append({"start": cur, "end": end, "label": label, "count": 0, "critical": 0})
+        cur = end
+        if len(buckets) >= 24:
+            break
+
+    for i in incs:
+        t = datetime.fromisoformat(i["first_ts"])
+        idx = int((t - start).total_seconds() // step_s)
+        idx = max(0, min(idx, len(buckets) - 1))
+        buckets[idx]["count"] += 1
+        buckets[idx]["critical"] += i["severity"] in ("critical", "high")
+
+    return [{
+        "t": b["start"].isoformat(timespec="seconds"),
+        "end": b["end"].isoformat(timespec="seconds"),
+        "label": b["label"],
+        "count": b["count"],
+        "critical": b["critical"],
+    } for b in buckets]
 
 
 class Api:
@@ -71,19 +132,7 @@ class Api:
             decs = db.decisions()
             executed = {d["incident_id"] for d in decs if d["status"] == "executed"}
             st = Executor(self.ws, {"actions": {}}).state()
-            timeline = []
-            if incs:
-                ts = sorted(datetime.fromisoformat(i["first_ts"]) for i in incs)
-                lo, hi = ts[0], ts[-1]
-                span = max((hi - lo).total_seconds(), 60)
-                n = 12
-                w = span / n
-                buckets = [{"t": (lo.timestamp() + k * w), "count": 0, "critical": 0} for k in range(n)]
-                for i in incs:
-                    k = min(int((datetime.fromisoformat(i["first_ts"]) - lo).total_seconds() / w), n - 1)
-                    buckets[k]["count"] += 1
-                    buckets[k]["critical"] += i["severity"] in ("critical", "high")
-                timeline = [{"t": datetime.fromtimestamp(b["t"]).isoformat(timespec="seconds"), "count": b["count"], "critical": b["critical"]} for b in buckets]
+            timeline = _build_timeline(incs)
             return {
                 "kpi": {"incidents": len(incs), "critical_high": sev["critical"] + sev["high"], "pending": len(pend),
                         "auto_handled": len(executed - set(pending)), "false_positives": sum(i["verdict"].startswith("bénin") for i in incs),

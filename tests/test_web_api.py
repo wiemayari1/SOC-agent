@@ -54,7 +54,8 @@ class TestWebApi(unittest.TestCase):
         self.assertEqual(o["kpi"]["incidents"], 12)
         self.assertEqual(o["kpi"]["pending"], 3)
         self.assertEqual(o["by_severity"]["critical"], 2)
-        self.assertEqual(len(o["timeline"]), 12)
+        self.assertGreaterEqual(len(o["timeline"]), 1)
+        self.assertEqual(sum(b["count"] for b in o["timeline"]), o["kpi"]["incidents"])
 
     def test_incident_list_filters_and_detail(self):
         rows = json.loads(self.get("/api/incidents?severity=critical")[1])
